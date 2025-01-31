@@ -18,6 +18,8 @@ use sys::System;
 mod dlmalloc;
 mod sys;
 
+pub use memmap2::Advice;
+
 /// In order for this crate to efficiently manage memory, it needs a way to communicate with the
 /// underlying platform. This `Allocator` trait provides an interface for this communication.
 pub unsafe trait Allocator: Send {
@@ -62,8 +64,12 @@ pub struct DiskDlmalloc(dlmalloc::Dlmalloc<System>);
 
 impl DiskDlmalloc {
     /// Creates a new instance of an allocator
-    pub fn new<P: AsRef<Path>>(file_path: P, total_size: usize) -> DiskDlmalloc {
-        DiskDlmalloc(dlmalloc::Dlmalloc::new(System::new(file_path, total_size)))
+    pub fn new<P: AsRef<Path>>(
+        file_path: P,
+        total_size: usize,
+        mem_advise: Option<Advice>,
+    ) -> DiskDlmalloc {
+        DiskDlmalloc(dlmalloc::Dlmalloc::new(System::new(file_path, total_size, mem_advise)))
     }
 }
 

@@ -7,7 +7,7 @@ use tempfile::NamedTempFile;
 fn smoke() {
     let temp_file = NamedTempFile::new().unwrap();
     let temp_file_path = temp_file.path();
-    let mut a = DiskDlmalloc::new(&temp_file_path, 10485760);
+    let mut a = DiskDlmalloc::new(&temp_file_path, 10485760, None);
     unsafe {
         let ptr = a.malloc(1, 1);
         assert!(!ptr.is_null());

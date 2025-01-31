@@ -9,7 +9,7 @@ const MAX_ALLOCATED: usize = 100 << 20; // 100 MB
 pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
     let temp_file = NamedTempFile::new()?;
     let temp_file_path = temp_file.path();
-    let mut a = DiskDlmalloc::new(temp_file_path, MAX_ALLOCATED * 2);
+    let mut a = DiskDlmalloc::new(temp_file_path, MAX_ALLOCATED * 2, None);
     let mut ptrs = Vec::new();
     let mut allocated = 0;
     unsafe {
