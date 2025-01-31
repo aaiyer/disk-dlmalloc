@@ -1,4 +1,4 @@
-use crate::Allocator;
+use crate::SystemAllocator;
 use core::ptr;
 use memmap2::{Advice, MmapMut};
 use std::fs::OpenOptions;
@@ -62,7 +62,7 @@ impl System {
     }
 }
 
-unsafe impl Allocator for System {
+unsafe impl SystemAllocator for System {
     fn alloc(&self, size: usize) -> (*mut u8, usize, u32) {
         let mut inner = self.inner.lock().unwrap();
         if inner.offset + size > inner.total_size {

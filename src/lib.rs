@@ -9,10 +9,13 @@
 
 #![allow(dead_code)]
 #![deny(missing_docs)]
+#![feature(allocator_api)]
 
 use core::cmp;
 use core::ptr;
+use std::alloc::{AllocError, Layout};
 use std::path::Path;
+use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 use sys::System;
 
@@ -23,7 +26,7 @@ pub use memmap2::Advice;
 
 /// In order for this crate to efficiently manage memory, it needs a way to communicate with the
 /// underlying platform. This `Allocator` trait provides an interface for this communication.
-pub unsafe trait Allocator: Send {
+pub unsafe trait SystemAllocator: Send {
     /// Allocates system memory region of at least `size` bytes
     /// Returns a triple of `(base, size, flags)` where `base` is a pointer to the beginning of the
     /// allocated memory region. `size` is the actual size of the region while `flags` specifies
@@ -86,7 +89,7 @@ impl DiskDlmalloc {
     /// Safety and contracts are largely governed by the `GlobalAlloc::alloc`
     /// method contracts.
     #[inline]
-    pub unsafe fn malloc(&mut self, size: usize, align: usize) -> *mut u8 {
+    pub unsafe fn malloc(&self, size: usize, align: usize) -> *mut u8 {
         let mut me = self.0.lock().unwrap();
         if align <= me.malloc_alignment() {
             me.malloc(size)
@@ -98,7 +101,7 @@ impl DiskDlmalloc {
     /// Same as `malloc`, except if the allocation succeeds it's guaranteed to
     /// point to `size` bytes of zeros.
     #[inline]
-    pub unsafe fn calloc(&mut self, size: usize, align: usize) -> *mut u8 {
+    pub unsafe fn calloc(&self, size: usize, align: usize) -> *mut u8 {
         let ptr = self.malloc(size, align);
         let me = self.0.lock().unwrap();
         if !ptr.is_null() && me.calloc_must_clear(ptr) {
@@ -113,7 +116,7 @@ impl DiskDlmalloc {
     /// Safety and contracts are largely governed by the `GlobalAlloc::dealloc`
     /// method contracts.
     #[inline]
-    pub unsafe fn free(&mut self, ptr: *mut u8, size: usize, align: usize) {
+    pub unsafe fn free(&self, ptr: *mut u8, size: usize, align: usize) {
         let _ = align;
         let mut me = self.0.lock().unwrap();
         me.validate_size(ptr, size);
@@ -131,7 +134,7 @@ impl DiskDlmalloc {
     /// method contracts.
     #[inline]
     pub unsafe fn realloc(
-        &mut self,
+        &self,
         ptr: *mut u8,
         old_size: usize,
         old_align: usize,
@@ -171,8 +174,186 @@ impl DiskDlmalloc {
     /// system.
     ///
     /// Returns `true` if it actually released any memory, else `false`.
-    pub unsafe fn trim(&mut self, pad: usize) -> bool {
+    pub unsafe fn trim(&self, pad: usize) -> bool {
         let mut me = self.0.lock().unwrap();
         me.trim(pad)
+    }
+}
+
+unsafe impl std::alloc::Allocator for DiskDlmalloc {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let size = layout.size();
+        let align = layout.align();
+        let mut me = self.0.lock().unwrap();
+        let ptr = if align <= me.malloc_alignment() {
+            unsafe { me.malloc(size) }
+        } else {
+            unsafe { me.memalign(align, size) }
+        };
+        if ptr.is_null() {
+            Err(AllocError)
+        } else {
+            unsafe {
+                Ok(NonNull::slice_from_raw_parts(
+                    NonNull::new_unchecked(ptr),
+                    size,
+                ))
+            }
+        }
+    }
+
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        let size = layout.size();
+        let align = layout.align();
+        let mut me = self.0.lock().unwrap();
+        let ptr = if align <= me.malloc_alignment() {
+            unsafe { me.malloc(size) }
+        } else {
+            unsafe { me.memalign(align, size) }
+        };
+        if ptr.is_null() {
+            return Err(AllocError);
+        }
+        unsafe {
+            if me.calloc_must_clear(ptr) {
+                ptr::write_bytes(ptr, 0, size);
+            }
+        }
+        unsafe {
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new_unchecked(ptr),
+                size,
+            ))
+        }
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        if layout.size() == 0 {
+            return;
+        }
+        let mut me = self.0.lock().unwrap();
+        me.validate_size(ptr.as_ptr(), layout.size());
+        me.free(ptr.as_ptr());
+    }
+
+    unsafe fn grow(&self,
+                   ptr: NonNull<u8>,
+                   old_layout: Layout,
+                   new_layout: Layout)
+                   -> Result<NonNull<[u8]>, AllocError> {
+        let old_size = old_layout.size();
+        let old_align = old_layout.align();
+        let new_size = new_layout.size();
+        let new_align = new_layout.align();
+        let mut me = self.0.lock().unwrap();
+        me.validate_size(ptr.as_ptr(), old_size);
+
+        if old_align <= me.malloc_alignment() && new_align <= me.malloc_alignment() {
+            let new_ptr = me.realloc(ptr.as_ptr(), new_size);
+            if new_ptr.is_null() {
+                return Err(AllocError);
+            }
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new_unchecked(new_ptr),
+                new_size,
+            ))
+        } else {
+            drop(me);
+            let res_ptr = self.malloc(new_size, new_align);
+            if res_ptr.is_null() {
+                return Err(AllocError);
+            }
+            ptr::copy_nonoverlapping(ptr.as_ptr(), res_ptr, core::cmp::min(old_size, new_size));
+            self.free(ptr.as_ptr(), old_size, old_align);
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new_unchecked(res_ptr),
+                new_size,
+            ))
+        }
+    }
+
+    unsafe fn grow_zeroed(&self,
+                          ptr: NonNull<u8>,
+                          old_layout: Layout,
+                          new_layout: Layout)
+                          -> Result<NonNull<[u8]>, AllocError> {
+        let old_size = old_layout.size();
+        let old_align = old_layout.align();
+        let new_size = new_layout.size();
+        let new_align = new_layout.align();
+        let mut me = self.0.lock().unwrap();
+        me.validate_size(ptr.as_ptr(), old_size);
+
+        if old_align <= me.malloc_alignment() && new_align <= me.malloc_alignment() {
+            let new_ptr = me.realloc(ptr.as_ptr(), new_size);
+            if new_ptr.is_null() {
+                return Err(AllocError);
+            }
+            if new_ptr == ptr.as_ptr() && new_size > old_size {
+                ptr::write_bytes(new_ptr.add(old_size), 0, new_size - old_size);
+            } else if new_ptr != ptr.as_ptr() && new_size > old_size && me.calloc_must_clear(new_ptr) {
+                ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr, old_size);
+                ptr::write_bytes(new_ptr.add(old_size), 0, new_size - old_size);
+            }
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new_unchecked(new_ptr),
+                new_size,
+            ))
+        } else {
+            drop(me);
+            let res_ptr = self.malloc(new_size, new_align);
+            if res_ptr.is_null() {
+                return Err(AllocError);
+            }
+            ptr::copy_nonoverlapping(ptr.as_ptr(), res_ptr, core::cmp::min(old_size, new_size));
+            if new_size > old_size {
+                ptr::write_bytes(res_ptr.add(old_size), 0, new_size - old_size);
+            }
+            self.free(ptr.as_ptr(), old_size, old_align);
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new_unchecked(res_ptr),
+                new_size,
+            ))
+        }
+    }
+
+    unsafe fn shrink(&self,
+                     ptr: NonNull<u8>,
+                     old_layout: Layout,
+                     new_layout: Layout)
+                     -> Result<NonNull<[u8]>, AllocError> {
+        let old_size = old_layout.size();
+        let old_align = old_layout.align();
+        let new_size = new_layout.size();
+        let new_align = new_layout.align();
+        let mut me = self.0.lock().unwrap();
+        me.validate_size(ptr.as_ptr(), old_size);
+
+        if old_align <= me.malloc_alignment() && new_align <= me.malloc_alignment() {
+            let new_ptr = me.realloc(ptr.as_ptr(), new_size);
+            if new_ptr.is_null() {
+                return Err(AllocError);
+            }
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new_unchecked(new_ptr),
+                new_size,
+            ))
+        } else {
+            drop(me);
+            let res_ptr = self.malloc(new_size, new_align);
+            if res_ptr.is_null() {
+                return Err(AllocError);
+            }
+            ptr::copy_nonoverlapping(ptr.as_ptr(), res_ptr, core::cmp::min(old_size, new_size));
+            self.free(ptr.as_ptr(), old_size, old_align);
+            Ok(NonNull::slice_from_raw_parts(
+                NonNull::new_unchecked(res_ptr),
+                new_size,
+            ))
+        }
+    }
+
+    fn by_ref(&self) -> &Self {
+        self
     }
 }

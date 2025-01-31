@@ -23,7 +23,7 @@ use core::cmp;
 use core::mem;
 use core::ptr;
 
-use crate::Allocator;
+use crate::SystemAllocator;
 
 pub struct Dlmalloc<A> {
     smallmap: u32,
@@ -132,7 +132,7 @@ impl<A> Dlmalloc<A> {
     }
 }
 
-impl<A: Allocator> Dlmalloc<A> {
+impl<A: SystemAllocator> Dlmalloc<A> {
     // TODO: can we get rid of this?
     pub fn malloc_alignment(&self) -> usize {
         mem::size_of::<usize>() * 2
@@ -1827,7 +1827,7 @@ impl Segment {
         (*seg).flags & EXTERN != 0
     }
 
-    unsafe fn can_release_part<A: Allocator>(system_allocator: &A, seg: *mut Segment) -> bool {
+    unsafe fn can_release_part<A: SystemAllocator>(system_allocator: &A, seg: *mut Segment) -> bool {
         system_allocator.can_release_part((*seg).flags >> 1)
     }
 
