@@ -104,8 +104,6 @@ pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
         for (ptr, size, align) in ptrs {
             a.free(ptr, size, align);
         }
-
-        a.destroy();
     }
 
     Ok(())

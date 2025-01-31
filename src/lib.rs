@@ -13,6 +13,7 @@
 use core::cmp;
 use core::ptr;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use sys::System;
 
 mod dlmalloc;
@@ -60,7 +61,8 @@ pub unsafe trait Allocator: Send {
 }
 
 /// An allocator instance
-pub struct DiskDlmalloc(dlmalloc::Dlmalloc<System>);
+#[derive(Clone)]
+pub struct DiskDlmalloc(Arc<Mutex<dlmalloc::Dlmalloc<System>>>);
 
 impl DiskDlmalloc {
     /// Creates a new instance of an allocator
@@ -69,7 +71,9 @@ impl DiskDlmalloc {
         total_size: usize,
         mem_advise: Option<Advice>,
     ) -> DiskDlmalloc {
-        DiskDlmalloc(dlmalloc::Dlmalloc::new(System::new(file_path, total_size, mem_advise)))
+        DiskDlmalloc(Arc::new(Mutex::new(dlmalloc::Dlmalloc::new(System::new(
+            file_path, total_size, mem_advise,
+        )))))
     }
 }
 
@@ -83,10 +87,11 @@ impl DiskDlmalloc {
     /// method contracts.
     #[inline]
     pub unsafe fn malloc(&mut self, size: usize, align: usize) -> *mut u8 {
-        if align <= self.0.malloc_alignment() {
-            self.0.malloc(size)
+        let mut me = self.0.lock().unwrap();
+        if align <= me.malloc_alignment() {
+            me.malloc(size)
         } else {
-            self.0.memalign(align, size)
+            me.memalign(align, size)
         }
     }
 
@@ -95,7 +100,8 @@ impl DiskDlmalloc {
     #[inline]
     pub unsafe fn calloc(&mut self, size: usize, align: usize) -> *mut u8 {
         let ptr = self.malloc(size, align);
-        if !ptr.is_null() && self.0.calloc_must_clear(ptr) {
+        let me = self.0.lock().unwrap();
+        if !ptr.is_null() && me.calloc_must_clear(ptr) {
             ptr::write_bytes(ptr, 0, size);
         }
         ptr
@@ -109,8 +115,9 @@ impl DiskDlmalloc {
     #[inline]
     pub unsafe fn free(&mut self, ptr: *mut u8, size: usize, align: usize) {
         let _ = align;
-        self.0.validate_size(ptr, size);
-        self.0.free(ptr)
+        let mut me = self.0.lock().unwrap();
+        me.validate_size(ptr, size);
+        me.free(ptr)
     }
 
     /// Reallocates `ptr`, a previous allocation with `old_size` and
@@ -130,11 +137,13 @@ impl DiskDlmalloc {
         old_align: usize,
         new_size: usize,
     ) -> *mut u8 {
-        self.0.validate_size(ptr, old_size);
+        let mut me = self.0.lock().unwrap();
+        me.validate_size(ptr, old_size);
 
-        if old_align <= self.0.malloc_alignment() {
-            self.0.realloc(ptr, new_size)
+        if old_align <= me.malloc_alignment() {
+            me.realloc(ptr, new_size)
         } else {
+            drop(me);
             let res = self.malloc(new_size, old_align);
             if !res.is_null() {
                 let size = cmp::min(old_size, new_size);
@@ -163,14 +172,7 @@ impl DiskDlmalloc {
     ///
     /// Returns `true` if it actually released any memory, else `false`.
     pub unsafe fn trim(&mut self, pad: usize) -> bool {
-        self.0.trim(pad)
-    }
-
-    /// Releases all allocations in this allocator back to the system,
-    /// consuming self and preventing further use.
-    ///
-    /// Returns the number of bytes released to the system.
-    pub unsafe fn destroy(self) -> usize {
-        self.0.destroy()
+        let mut me = self.0.lock().unwrap();
+        me.trim(pad)
     }
 }
