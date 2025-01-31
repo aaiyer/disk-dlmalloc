@@ -1,31 +1,22 @@
-//! A Rust port of the `dlmalloc` allocator.
+//! A fork of [dlmalloc-rs] backed by a memory-mapped file, enabling support for datasets
+//! exceeding available RAM.
 //!
 //! The `dlmalloc` allocator is described at
 //! <https://gee.cs.oswego.edu/dl/html/malloc.html> and this Rust crate is a straight
 //! port of the C code for the allocator into Rust. The implementation is
 //! wrapped up in a `Dlmalloc` type and has support for Linux, OSX, and Wasm
 //! currently.
-//!
-//! The primary purpose of this crate is that it serves as the default memory
-//! allocator for the `wasm32-unknown-unknown` target in the standard library.
-//! Support for other platforms is largely untested and unused, but is used when
-//! testing this crate.
 
 #![allow(dead_code)]
-#![no_std]
 #![deny(missing_docs)]
-#![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
 
 use core::cmp;
 use core::ptr;
+use std::path::Path;
 use sys::System;
 
-#[cfg(feature = "global")]
-pub use self::global::{enable_alloc_after_fork, GlobalDlmalloc};
-
 mod dlmalloc;
-#[cfg(feature = "global")]
-mod global;
+mod sys;
 
 /// In order for this crate to efficiently manage memory, it needs a way to communicate with the
 /// underlying platform. This `Allocator` trait provides an interface for this communication.
@@ -67,46 +58,16 @@ pub unsafe trait Allocator: Send {
 }
 
 /// An allocator instance
-///
-/// Instances of this type are used to allocate blocks of memory. For best
-/// results only use one of these. Currently doesn't implement `Drop` to release
-/// lingering memory back to the OS. That may happen eventually though!
-pub struct Dlmalloc<A = System>(dlmalloc::Dlmalloc<A>);
+pub struct DiskDlmalloc(dlmalloc::Dlmalloc<System>);
 
-cfg_if::cfg_if! {
-    if #[cfg(target_family = "wasm")] {
-        #[path = "wasm.rs"]
-        mod sys;
-    } else if #[cfg(target_os = "windows")] {
-        #[path = "windows.rs"]
-        mod sys;
-    } else if #[cfg(target_os = "xous")] {
-        #[path = "xous.rs"]
-        mod sys;
-    } else if #[cfg(any(target_os = "linux", target_os = "macos"))] {
-        #[path = "unix.rs"]
-        mod sys;
-    } else {
-        #[path = "dummy.rs"]
-        mod sys;
-    }
-}
-
-impl Dlmalloc<System> {
+impl DiskDlmalloc {
     /// Creates a new instance of an allocator
-    pub const fn new() -> Dlmalloc<System> {
-        Dlmalloc(dlmalloc::Dlmalloc::new(System::new()))
+    pub fn new<P: AsRef<Path>>(file_path: P, total_size: usize) -> DiskDlmalloc {
+        DiskDlmalloc(dlmalloc::Dlmalloc::new(System::new(file_path, total_size)))
     }
 }
 
-impl<A> Dlmalloc<A> {
-    /// Creates a new instance of an allocator
-    pub const fn new_with_allocator(sys_allocator: A) -> Dlmalloc<A> {
-        Dlmalloc(dlmalloc::Dlmalloc::new(sys_allocator))
-    }
-}
-
-impl<A: Allocator> Dlmalloc<A> {
+impl DiskDlmalloc {
     /// Allocates `size` bytes with `align` align.
     ///
     /// Returns a null pointer if allocation fails. Returns a valid pointer

@@ -1,26 +1,11 @@
-# dlmalloc-rs
+# disk-dlmalloc
 
-A port of [dlmalloc] to Rust.
+A fork of [dlmalloc-rs] backed by a memory-mapped file, enabling support for datasets exceeding available RAM.
 
-[Documentation](https://docs.rs/dlmalloc)
+[Documentation](https://docs.rs/disk-dlmalloc)
 
+[dlmalloc-rs]: https://github.com/alexcrichton/dlmalloc-rs
 [dlmalloc]: https://gee.cs.oswego.edu/dl/html/malloc.html
-
-## Why dlmalloc?
-
-This crate is a port of [dlmalloc] to Rust, and doesn't rely on C. The primary
-purpose of this crate is to serve as the default allocator for Rust on the
-`wasm32-unknown-unknown` target. At the time this was written the wasm target
-didn't support C code, so it was required to have a Rust-only solution.
-
-This allocator is not the most performant by a longshot. It is primarily, I
-think, intended for being easy to port and easy to learn. I didn't dive too deep
-into the implementation when writing it, it's just a straight port of the C
-version.
-
-It's unlikely that Rust code needs to worry/interact with this allocator in
-general. Most of the time you'll be manually switching to a different allocator
-:)
 
 # License
 

@@ -1,11 +1,15 @@
-use arbitrary::{Result, Unstructured};
-use dlmalloc::Dlmalloc;
+use anyhow::Result;
+use arbitrary::Unstructured;
+use disk_dlmalloc::DiskDlmalloc;
 use std::cmp;
+use tempfile::NamedTempFile;
 
 const MAX_ALLOCATED: usize = 100 << 20; // 100 MB
 
 pub fn run(u: &mut Unstructured<'_>) -> Result<()> {
-    let mut a = Dlmalloc::new();
+    let temp_file = NamedTempFile::new()?;
+    let temp_file_path = temp_file.path();
+    let mut a = DiskDlmalloc::new(temp_file_path, MAX_ALLOCATED * 2);
     let mut ptrs = Vec::new();
     let mut allocated = 0;
     unsafe {

@@ -1,10 +1,13 @@
 use arbitrary::Unstructured;
-use dlmalloc::Dlmalloc;
+use disk_dlmalloc::DiskDlmalloc;
 use rand::{rngs::SmallRng, RngCore, SeedableRng};
+use tempfile::NamedTempFile;
 
 #[test]
 fn smoke() {
-    let mut a = Dlmalloc::new();
+    let temp_file = NamedTempFile::new().unwrap();
+    let temp_file_path = temp_file.path();
+    let mut a = DiskDlmalloc::new(&temp_file_path, 10485760);
     unsafe {
         let ptr = a.malloc(1, 1);
         assert!(!ptr.is_null());
